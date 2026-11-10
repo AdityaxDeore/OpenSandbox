@@ -35,6 +35,7 @@ from opensandbox_server.services.snapshot_runtime import (
     SnapshotRuntimePreflightError,
     SnapshotRuntimeStatus,
     SnapshotRuntimeUnsupportedError,
+    reject_rootfs_only_mode,
 )
 
 logger = logging.getLogger(__name__)
@@ -129,8 +130,10 @@ class DockerSnapshotRuntime:
         sandbox_id: str,
         *,
         namespace: str | None = None,
+        mode: str | None = None,
     ) -> None:
         del namespace  # Docker snapshots are labeled by sandbox id only.
+        reject_rootfs_only_mode("Docker snapshot images are full-only", mode)
         try:
             container = self._get_container_by_sandbox_id(sandbox_id)
         except (RuntimeError, ReadTimeout, ConnectTimeout, TimeoutError) as exc:
@@ -151,7 +154,9 @@ class DockerSnapshotRuntime:
         sandbox_id: str,
         *,
         namespace: str | None = None,
+        mode: str | None = None,
     ) -> Optional[SnapshotRuntimeStatus]:
+        del mode  # rootfsOnly is rejected in preflight; Docker commits are full.
         return self._create_snapshot(snapshot_id, sandbox_id)
 
     def get_snapshot_status(self, snapshot_id: str) -> Optional[SnapshotRuntimeStatus]:

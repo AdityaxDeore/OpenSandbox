@@ -52,11 +52,13 @@ from opensandbox_server.repositories.snapshots.factory import get_snapshot_repos
 from opensandbox_server.services.constants import SnapshotErrorCodes
 from opensandbox_server.services.snapshot_runtime import (
     SNAPSHOT_CREATE_CONFLICT_REASON,
+    SNAPSHOT_MODE_FULL,
     NoopSnapshotRuntime,
     SnapshotRuntime,
     SnapshotRuntimePreflightError,
     SnapshotRuntimeStatus,
     SnapshotRuntimeUnsupportedError,
+    normalize_snapshot_mode,
 )
 from opensandbox_server.services.snapshot_runtime_factory import create_snapshot_runtime
 from opensandbox_server.services.snapshot_models import (
@@ -153,10 +155,12 @@ class PersistedSnapshotService(SnapshotService):
             )
 
         namespace = self._get_tenant_namespace()
+        mode = normalize_snapshot_mode(request.mode)
         try:
             self._snapshot_runtime.preflight_create_snapshot(
                 sandbox_id,
                 namespace=namespace,
+                mode=mode,
             )
         except SnapshotRuntimeUnsupportedError as exc:
             raise HTTPException(
@@ -181,6 +185,7 @@ class PersistedSnapshotService(SnapshotService):
             source_sandbox_id=sandbox_id,
             namespace=namespace,
             name=request.name,
+            mode=mode,
             restore_config=self._default_restore_config(),
             status=SnapshotStatusRecord(
                 state=SnapshotState.CREATING,
@@ -206,6 +211,7 @@ class PersistedSnapshotService(SnapshotService):
                 record.id,
                 record.source_sandbox_id,
                 namespace=record.namespace,
+                mode=record.mode,
             )
         except Exception as exc:  # noqa: BLE001 - surfaced to the caller
             logger.exception(
@@ -505,6 +511,7 @@ class PersistedSnapshotService(SnapshotService):
             namespace=record.namespace,
             name=record.name,
             description=record.description,
+            mode=record.mode,
             restore_config=record.restore_config,
             status=SnapshotStatusRecord(
                 state=SnapshotState.DELETING,
@@ -541,6 +548,7 @@ class PersistedSnapshotService(SnapshotService):
                 record.id,
                 record.source_sandbox_id,
                 namespace=record.namespace,
+                mode=record.mode,
             )
         except Exception as exc:  # noqa: BLE001
             logger.exception(
@@ -726,6 +734,7 @@ class PersistedSnapshotService(SnapshotService):
                     namespace=record.namespace,
                     name=record.name,
                     description=record.description,
+                    mode=record.mode,
                     restore_config=record.restore_config,
                     status=SnapshotStatusRecord(
                         state=SnapshotState.FAILED,
@@ -743,6 +752,10 @@ class PersistedSnapshotService(SnapshotService):
                 namespace=record.namespace,
                 name=record.name,
                 description=record.description,
+                # The runtime-confirmed artifact class wins on READY; the
+                # request mode stays as the fallback for runtimes that
+                # cannot report one.
+                mode=runtime_status.mode or record.mode,
                 restore_config=SnapshotRestoreConfig(
                     image=runtime_status.image,
                     backend=runtime_status.backend or record.restore_config.backend,
@@ -767,6 +780,7 @@ class PersistedSnapshotService(SnapshotService):
                 namespace=record.namespace,
                 name=record.name,
                 description=record.description,
+                mode=record.mode,
                 restore_config=record.restore_config,
                 status=SnapshotStatusRecord(
                     state=SnapshotState.FAILED,
@@ -838,6 +852,7 @@ class PersistedSnapshotService(SnapshotService):
             id=record.id,
             sandboxId=record.source_sandbox_id,
             name=record.name,
+            mode=record.mode or SNAPSHOT_MODE_FULL,
             status=SnapshotStatus(
                 state=record.status.state.value,
                 reason=record.status.reason,
