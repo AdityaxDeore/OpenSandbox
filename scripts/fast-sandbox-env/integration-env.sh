@@ -33,11 +33,13 @@
 # endpoint, and the execd-as-init in-guest process verify (OSEP-0018:
 # `execd --init` as a subreaper under the guest init — topology, reaping,
 # and the hardening report pinned in-guest). The verify-overlaybd matrix
-# adds the FSEP-0001 rootfs-only snapshot experiment on the OCI template:
+# adds the FSEP-0001 rootfs-only snapshot experiment (opt-in, ROOTFS_ONLY=1:
 # create -> rootfs-only snapshot (server row + SandboxSnapshot CR mode
 # metadata, oci:// pair) -> source survival via execd /ping -> cold-boot
 # restore from the snapshot -> one pause/resume round on the cold-booted
-# descendant (full checkpoints must keep working there).
+# descendant). Rootfs-only capture is operator-qualified upstream; the env
+# does not fabricate the qualification, so the stage stays off unless the
+# stack was qualified by its operator.
 #
 # All Kubernetes resources come from the charts via `helm template` + plain
 # `kubectl apply` (no helm release state); the only env-owned manifests are
@@ -92,6 +94,11 @@
 #                    registry (CA baked into the fsb images), the chart's
 #                    runtime.oci node stack, and a full overlaybd verify
 #                    pass beside native. Nodes need ublk support. 0 = native-only.
+#   ROOTFS_ONLY      1 = also run the FSEP-0001 rootfs-only snapshot verify
+#                    (overlaybd lane only). Off by default: the capture is
+#                    operator-qualified upstream (qualification profile +
+#                    ublkd record + node guest kernel); enable only on a
+#                    stack whose operator provisioned them.
 #
 # Every stage logs to $WORK/logs/; failures dump component logs to
 # logs/failure-<task>-<ts>.txt before exiting (never silently).
@@ -4026,8 +4033,13 @@ rootfs_only_verify() {
 	if execd_ping_ok; then
 		fail "paused sandbox still serves /ping through the gateway"
 	fi
-	[[ "$(kubectl_get "sandbox/$restore_id" '{.status.runtime.checkpoint.manifestRef}' 2>/dev/null)" == "s3://"* ]] \
-		|| fail "pause of the cold-booted sandbox recorded no durable checkpoint"
+	# Durability, not scheme: an OCI-backed sandbox publishes even a Full
+	# pause checkpoint through publishOCISnapshot() (oci:// ref); the native
+	# store would be s3://. Both mean the checkpoint is durable.
+	local checkpoint_ref
+	checkpoint_ref="$(kubectl_get "sandbox/$restore_id" '{.status.runtime.checkpoint.manifestRef}' 2>/dev/null)"
+	[[ "$checkpoint_ref" == "s3://"* || "$checkpoint_ref" == "oci://"* ]] \
+		|| fail "pause of the cold-booted sandbox recorded no durable checkpoint (manifestRef: ${checkpoint_ref:-<none>})"
 	pass "pause on the cold-booted descendant: full checkpoint durable, route released"
 	osb_api sandbox resume "$restore_id" --skip-health-check >/dev/null 2>&1 \
 		|| fail "resume failed for $restore_id"
@@ -4212,7 +4224,17 @@ verify_overlaybd() {
 	run_stage "exchange resolver verify (overlaybd template, OSEP-0025)" exchange_resolver_verify "$OCI_TEMPLATE_ID"
 	run_stage "idle-pause / wake-on-access verify (overlaybd template)" idle_pause_verify "$OCI_TEMPLATE_ID"
 	run_stage "snapshot verify (overlaybd template)" snapshot_verify "$OCI_TEMPLATE_ID"
-	run_stage "rootfs-only snapshot verify (overlaybd template, FSEP-0001)" rootfs_only_verify "$OCI_TEMPLATE_ID"
+	# Rootfs-only capture is operator-qualified by design (FSEP-0001): the
+	# fastlet requires a FAST_SANDBOX_ROOTFS_QUALIFICATION profile, a
+	# qualified ublkd backend record, and a node guest-kernel asset for
+	# cold-boot restore. This environment deliberately does not fabricate
+	# those attestations; the stage is opt-in for stacks whose operators
+	# provisioned them.
+	if [[ "${ROOTFS_ONLY:-0}" == 1 ]]; then
+		run_stage "rootfs-only snapshot verify (overlaybd template, FSEP-0001)" rootfs_only_verify "$OCI_TEMPLATE_ID"
+	else
+		log "ROOTFS_ONLY!=1: skipping the rootfs-only snapshot verify (requires an operator-qualified stack: qualification profile, ublkd qualification record, guest kernel asset)"
+	fi
 	# Same placement rationale as verify_native: the family recorded by this
 	# matrix's opensandbox_verify pass was killed stages ago.
 	run_stage "vm-console finalize verify (overlaybd, node-agent completeness marker)" vm_console_finalize_verify
